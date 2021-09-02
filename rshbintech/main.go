@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"sync"
 
 	"github.com/gorilla/mux"
 
@@ -19,9 +20,10 @@ type BookModel struct {
 type Service struct {
 	Pool   []*pgx.Conn
 	IsInit bool
+	mux    *sync.Mutex
 }
 
-func (s Service) initService(username, password string) {
+func (s *Service) initService(username, password string) {
 	var backgroundTask = func() {
 		var databaseUrl = "postgres://" + username + ":" + password + "@10.7.27.34:5432/books"
 		for i := 1; i <= 10; i++ {
@@ -37,24 +39,29 @@ func (s Service) initService(username, password string) {
 	go backgroundTask()
 }
 
-func (s Service) getBooksByAuthor(username, password string, author *string, result []BookModel) {
+func (s *Service) getBooksByAuthor(username, password string, author *string, result *[]BookModel) error {
+	s.mux.Lock()
 	if !s.IsInit {
 		s.initService(username, password)
 		s.IsInit = true
 	}
+	s.mux.Unlock()
 
 	var conn *pgx.Conn
+
+	s.mux.Lock()
 	for _, x := range s.Pool {
 		if !x.IsClosed() {
 			conn = x
 			break
 		}
 	}
+	s.mux.Unlock()
 
 	rows, err := conn.Query(context.Background(), "select title, cost from books where author="+*author)
 	if err != nil {
 		println("Не удалось получить книги по автору")
-		panic(nil)
+		return err
 	}
 
 	for rows.Next() {
@@ -62,11 +69,12 @@ func (s Service) getBooksByAuthor(username, password string, author *string, res
 		var cost int
 		err = rows.Scan(&title, &cost)
 		if err == nil {
-			result = append(result, BookModel{title, *author, cost})
+			*result = append(*result, BookModel{title, *author, cost})
 		}
 	}
 
-	println("Успешно выполнен запрос, заполнено записей: " + strconv.Itoa(len(result)))
+	println("Успешно выполнен запрос, заполнено записей: " + strconv.Itoa(len(*result)))
+	return nil
 }
 
 func main() {
@@ -78,7 +86,7 @@ func main() {
 		vars := mux.Vars(r)
 		author := vars["author"]
 		var result = make([]BookModel, 10)
-		service.getBooksByAuthor("boris", "qwerty", &author, result)
+		service.getBooksByAuthor("boris", "qwerty", &author, &result)
 	})
 	http.ListenAndServe(":8080", r)
 }
